@@ -1,0 +1,84 @@
+#include <Wire.h>
+#include <Adafruit_VL53L0X.h>
+
+// SDA truoc, SCL sau
+TwoWire VL53Wire(PB9, PB8);
+
+#define XSHUT_PIN PB12
+
+Adafruit_VL53L0X lox;
+bool sensorReady = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1500);
+
+  Serial.println("\n=== TEST VL53L0X PB9/PB8 ===");
+
+  // Reset cam bien
+  pinMode(XSHUT_PIN, OUTPUT);
+  digitalWrite(XSHUT_PIN, LOW);
+  delay(100);
+  digitalWrite(XSHUT_PIN, HIGH);
+  delay(500);
+
+  // Khoi dong bus rieng
+  VL53Wire.begin();
+  VL53Wire.setClock(50000);
+
+  // Quet dia chi I2C
+  bool found29 = false;
+
+  Serial.println("Dang quet I2C...");
+
+  for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+    VL53Wire.beginTransmission(addr);
+    uint8_t err = VL53Wire.endTransmission();
+
+    if (err == 0) {
+      Serial.print("Tim thay dia chi: 0x");
+      Serial.println(addr, HEX);
+
+      if (addr == 0x29) {
+        found29 = true;
+      }
+    }
+  }
+
+  if (!found29) {
+    Serial.println("Khong tim thay dia chi 0x29.");
+    Serial.println("Kiem tra lai PB9, PB8, XSHUT va nguon.");
+    return;
+  }
+
+  Serial.println("Da nhan duoc dia chi 0x29.");
+
+  if (!lox.begin(0x29, false, &VL53Wire)) {
+    Serial.println("Loi khoi tao thu vien VL53L0X.");
+    return;
+  }
+
+  sensorReady = true;
+  Serial.println("Khoi tao thanh cong!");
+}
+
+void loop() {
+  if (!sensorReady) {
+    delay(2000);
+    return;
+  }
+
+  VL53L0X_RangingMeasurementData_t measure;
+  lox.rangingTest(&measure, false);
+
+  if (measure.RangeStatus == 0) {
+    Serial.print("Khoang cach: ");
+    Serial.print(measure.RangeMilliMeter);
+    Serial.println(" mm");
+  } else {
+    Serial.print("Phep do khong hop le. Status = ");
+    Serial.println(measure.RangeStatus);
+  }
+
+  delay(500);
+}
