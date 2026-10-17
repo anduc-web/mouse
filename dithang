@@ -1,0 +1,193 @@
+// ===== DRV8833 =====
+const uint8_t M3_IN1 = PA1;  // Motor trái
+const uint8_t M3_IN2 = PA2;
+
+const uint8_t M4_IN1 = PA3;  // Motor phải
+const uint8_t M4_IN2 = PA5;
+
+const uint8_t MOTOR_SLEEP = PA0;
+
+// ===== Encoder =====
+const uint8_t LEFT_ENCODER_A  = PB5;
+const uint8_t LEFT_ENCODER_B  = PB4;
+const uint8_t RIGHT_ENCODER_A = PA8;
+const uint8_t RIGHT_ENCODER_B = PA9;
+
+volatile long leftCount = 0;
+volatile long rightCount = 0;
+
+// ===== Thông số bánh và encoder =====
+const float WHEEL_DIAMETER_MM = 34.0;
+const float ENCODER_PULSES    = 12.0;
+const float GEAR_RATIO        = 3.0;
+
+// Đặt 0 để hai bánh có cùng mục tiêu xung.
+// Chỉ dùng bias sau khi đã đo và hiệu chuẩn thực tế.
+const float ROTATION_BIAS = 0.0035;
+
+// ===== Hiệu chỉnh chạy thẳng =====
+const int BASE_PWM_LEFT  = 120; // Bánh trái nhanh hơn thì giảm, ví dụ 115
+const int BASE_PWM_RIGHT = 120; // Bánh phải nhanh hơn thì giảm giá trị này
+
+const float CORRECTION_GAIN = 2.0; // Mức bù theo độ lệch xung
+const int MAX_CORRECTION = 40;
+
+// ===== Quãng đường =====
+const float DISTANCE_MM = 180.0;
+
+// Số mm quy đổi cho mỗi xung encoder theo mô hình hiện tại
+const float MM_PER_COUNT =
+    PI * WHEEL_DIAMETER_MM / (ENCODER_PULSES * GEAR_RATIO);
+
+const float MM_PER_COUNT_LEFT =
+    (1.0 - ROTATION_BIAS) * MM_PER_COUNT;
+
+const float MM_PER_COUNT_RIGHT =
+    (1.0 + ROTATION_BIAS) * MM_PER_COUNT;
+
+const long TARGET_LEFT =
+    (long)(DISTANCE_MM / MM_PER_COUNT_LEFT);
+
+const long TARGET_RIGHT =
+    (long)(DISTANCE_MM / MM_PER_COUNT_RIGHT);
+
+// Nếu motor quay ngược chiều chạy tới, đổi giá trị tương ứng thành true.
+const bool REVERSE_LEFT_MOTOR  = true;
+const bool REVERSE_RIGHT_MOTOR = false;
+
+// Encoder chỉ đếm cạnh lên của kênh A.
+// Nếu chiều đếm không đúng, việc này không ảnh hưởng khi chỉ chạy tới.
+void leftEncoderISR() {
+  leftCount++;
+}
+
+void rightEncoderISR() {
+  rightCount++;
+}
+
+long readLeftCount() {
+  noInterrupts();
+  long value = leftCount;
+  interrupts();
+  return value;
+}
+
+long readRightCount() {
+  noInterrupts();
+  long value = rightCount;
+  interrupts();
+  return value;
+}
+
+void resetEncoders() {
+  noInterrupts();
+  leftCount = 0;
+  rightCount = 0;
+  interrupts();
+}
+
+// Điều khiển một motor; speed nằm trong khoảng -255 đến 255.
+void setOneMotor(uint8_t in1, uint8_t in2, int speed, bool reverseMotor) {
+  speed = constrain(speed, -255, 255);
+
+  if (reverseMotor) {
+    speed = -speed;
+  }
+
+  if (speed > 0) {
+    analogWrite(in1, speed);
+    analogWrite(in2, 0);
+  } else if (speed < 0) {
+    analogWrite(in1, 0);
+    analogWrite(in2, -speed);
+  } else {
+    analogWrite(in1, 0);
+    analogWrite(in2, 0);
+  }
+}
+
+void setMotors(int leftPWM, int rightPWM) {
+  setOneMotor(M3_IN1, M3_IN2, leftPWM, REVERSE_LEFT_MOTOR);
+  setOneMotor(M4_IN1, M4_IN2, rightPWM, REVERSE_RIGHT_MOTOR);
+}
+
+void driveStraight18cm() {
+  resetEncoders();
+
+  unsigned long startTime = millis();
+
+  while (readLeftCount() < TARGET_LEFT ||
+         readRightCount() < TARGET_RIGHT) {
+
+    long left  = readLeftCount();
+    long right = readRightCount();
+
+    // Dương: trái đang có nhiều xung hơn phải.
+    int error = (int)(left - right);
+    int correction = constrain(
+        (int)(CORRECTION_GAIN * error),
+        -MAX_CORRECTION,
+        MAX_CORRECTION
+    );
+
+    // Bù chênh lệch xung: giảm bên đang đi trước, tăng bên đang đi sau.
+    int leftPWM  = BASE_PWM_LEFT  - correction;
+    int rightPWM = BASE_PWM_RIGHT + correction;
+
+    // Dừng riêng bánh đã đạt số xung mục tiêu.
+    if (left >= TARGET_LEFT)  leftPWM = 0;
+    if (right >= TARGET_RIGHT) rightPWM = 0;
+
+    setMotors(leftPWM, rightPWM);
+
+    // Dừng an toàn nếu encoder không đếm hoặc bánh bị kẹt.
+    if (millis() - startTime > 10000) {
+      break;
+    }
+  }
+
+  setMotors(0, 0);
+
+  Serial.print("Xung trai: ");
+  Serial.println(readLeftCount());
+  Serial.print("Xung phai: ");
+  Serial.println(readRightCount());
+  Serial.print("Muc tieu trai: ");
+  Serial.println(TARGET_LEFT);
+  Serial.print("Muc tieu phai: ");
+  Serial.println(TARGET_RIGHT);
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(M3_IN1, OUTPUT);
+  pinMode(M3_IN2, OUTPUT);
+  pinMode(M4_IN1, OUTPUT);
+  pinMode(M4_IN2, OUTPUT);
+
+  pinMode(MOTOR_SLEEP, OUTPUT);
+  digitalWrite(MOTOR_SLEEP, HIGH); // Bật DRV8833
+
+  pinMode(LEFT_ENCODER_A, INPUT_PULLUP);
+  pinMode(LEFT_ENCODER_B, INPUT_PULLUP);
+  pinMode(RIGHT_ENCODER_A, INPUT_PULLUP);
+  pinMode(RIGHT_ENCODER_B, INPUT_PULLUP);
+
+  attachInterrupt(
+      digitalPinToInterrupt(LEFT_ENCODER_A),
+      leftEncoderISR,
+      RISING
+  );
+  attachInterrupt(
+      digitalPinToInterrupt(RIGHT_ENCODER_A),
+      rightEncoderISR,
+      RISING
+  );
+
+  delay(1000);
+  driveStraight18cm();
+}
+
+void loop() {
+}
